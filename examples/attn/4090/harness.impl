@@ -2,13 +2,13 @@
 #include <string>
 #include <fstream>
 
-constexpr int ATTN_B = 16;
-constexpr int ATTN_H = 16;
-constexpr int ATTN_N = 4096;
-constexpr int ATTN_D = 64; // hardcoded into this kernel
-constexpr int ITER   = 10;
+constexpr int ATTN_B = 1;
+constexpr int ATTN_H = 1;
+constexpr int ATTN_N = 256;
+constexpr int ATTN_D = 16; // hardcoded into this kernel
+constexpr int ITER   = 1;
 
-#define BLOCK_SIZE (32*NUM_WORKERS)
+#define BLOCK_SIZE (32*NUM_WORKERS) // one warp per head
 
 #define CudaCheckError()    __cudaCheckError( __FILE__, __LINE__ )
 inline void __cudaCheckError( const char *file, const int line ) {
@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
     unsigned long mem_size = kittens::MAX_SHARED_MEMORY; // have the flag tell us
     
     cudaFuncSetAttribute(
-        attend_ker64,
+        attend_ker16,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         mem_size
     );
@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
     std::cout << "Starting kernel\n";
     const auto start = std::chrono::high_resolution_clock::now();
     for(int i = 0; i < ITER; i++) {
-        attend_ker64<<<ATTN_B*ATTN_H, BLOCK_SIZE, mem_size>>>(ATTN_N, d_q, d_k, d_v, d_o);
+        attend_ker16<<<ATTN_B*ATTN_H, BLOCK_SIZE, mem_size>>>(ATTN_N, d_q, d_k, d_v, d_o);
     }
     cudaDeviceSynchronize();
     const auto finish = std::chrono::high_resolution_clock::now();
