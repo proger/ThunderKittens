@@ -4,6 +4,7 @@
 
 #define NUM_WORKERS 1 // This kernel uses this many workers in parallel per block, to help issue instructions more quickly.
 #define DIMENSION 16 // This kernel operates over 16-dimensional vectors
+#define DEBUG 0
 
 using namespace kittens; // this kernel only handles headdim=q_reg.cols for simplicity. Also n should be a multiple of 256 here.
 
@@ -50,10 +51,8 @@ __global__ void attend_ker16(int n, const bf16* __restrict__ __q__, const bf16* 
         // each warp loads its own Q tile of 16x16
         load(q_reg, _q + (q_blk*NUM_WORKERS + warpid)*S*D, D);
 
-        if (q_blk == 0) {
+        if (DEBUG && q_blk == 0) {
             tileprint(q_reg, "q_reg");
-            // make_causal(q_reg, q_reg, kittens::base_types::constants<bf16>::zero());
-            // tileprint(q_reg, "CAUSAL");
         }
 
         // zero flash attention O registers.
@@ -68,7 +67,7 @@ __global__ void attend_ker16(int n, const bf16* __restrict__ __q__, const bf16* 
 
             // now each warp goes through all of the subtiles, loads them, and then does the flash attention internal alg.
             for(int subtile = 0; subtile < NUM_WORKERS; subtile++) {
-                if (kittens::laneid() >= 0) {
+                if (DEBUG) {
                     printf("warpid=%d threadIdx.x=%d q_source_range=%d:%d, kv_target_range=%d:%d\n",
                             warpid, threadIdx.x,
                             (q_blk*NUM_WORKERS + warpid)*S, (q_blk*NUM_WORKERS + warpid)*S + S, // q_range
@@ -91,8 +90,6 @@ __global__ void attend_ker16(int n, const bf16* __restrict__ __q__, const bf16* 
                 rt_bf_1x1<ducks::rt_layout::col> &v_reg_col = swap_layout_inplace(v_reg); // this is a reference and the call has invalidated v_reg
 
                 mma_AB(o_reg, att_block_mma, v_reg_col, o_reg); // mfma onto o_reg with the local attention@V matmul.
-
-                //one(o_reg);
             }
             __syncthreads(); // we need to make sure all warps are done before we can start loading the next kv chunk
         }
