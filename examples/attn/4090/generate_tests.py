@@ -7,7 +7,7 @@ import sys
 # it does mean we'll have to check batch/head behavior separately later, but that should be much easier to debug.
 B = 1
 H = 1
-N = 32 # sequence length
+N = 256 # sequence length
 D = 16
 DV = 16
 

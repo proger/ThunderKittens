@@ -4,7 +4,7 @@
 
 #define NUM_WORKERS 1 // This kernel uses this many workers in parallel per block, to help issue instructions more quickly.
 #define DIMENSION 16 // This kernel operates over 16-dimensional vectors
-#define DEBUG 1
+#define DEBUG 0
 
 using namespace kittens; // this kernel only handles headdim=q_reg.cols for simplicity. Also n should be a multiple of 256 here.
 
@@ -333,7 +333,6 @@ __global__ void attend_ker16(
     bf16 *_o = __o__ + block_start;
     const float *_f = __f__ + gate_start;
 
-
     extern __shared__ alignment_dummy __shm[]; // this is the CUDA shared memory
     shared_allocator al((int*)&__shm[0]);
 
@@ -345,7 +344,6 @@ __global__ void attend_ker16(
     // Initialize all of the register tiles.
     rt_bf_1x1<> q_reg, k_reg, v_reg; // v_reg need to be swapped into col_l
     rv<float2,1> f_reg;
-    rv<float2,1> edge_reg;
     rt_fl_1x1<> F_reg; // multiplied matrix
     rt_bf_1x1<> F_reg_mul;
     rt_bf_1x1<> F_reg2;
@@ -357,31 +355,19 @@ __global__ void attend_ker16(
     const auto D = q_reg.cols; // headdim
 
     int qo_blocks = n / (S*NUM_WORKERS);
-    //printf("have warpid=%d blockIdx.x=%d,%d,%d threadIdx=%d,%d,%d  block_start=%d qo_blocks=%d __q__=%p\n", warpid,  blockIdx.x, blockIdx.y,blockIdx.z,threadIdx.x,threadIdx.y,threadIdx.z, block_start, qo_blocks, __q__);
-
-    auto forget = 0.0;
 
     for(auto q_blk = 0; q_blk < qo_blocks; q_blk++) {
-    //for(auto q_blk = 0, ii = 0; ii < 1; ii++ ) {
-
         // each warp loads its own Q tile of 16x16
         load(q_reg, _q + (q_blk*NUM_WORKERS + warpid)*S*D, D);
 
-        // if (DEBUG && q_blk == 0) {
-        //     tileprint(q_reg, "q_reg");
-        // }
-
         // zero flash attention O registers.
         zero(o_reg);
-        zero(edge_reg);
 
         auto q_source_range_start = (q_blk*NUM_WORKERS + warpid)*S;
         auto q_source_range_end = (q_blk*NUM_WORKERS + warpid)*S + S;
 
         // iterate over k, v for these q's that have been loaded BACKWARDS
         for(auto kv_idx = q_blk; kv_idx >= 0; kv_idx--) {
-        //for(auto kv_idx = 0; kv_idx <= q_blk; kv_idx++) {
-        // for(auto kv_idx = q_blk, jj = 0;jj < 1; jj++ ) {
             // each warp loads its own chunk of k, v into shared memory
             load(v_smem[warpid], _v + (kv_idx*NUM_WORKERS + warpid)*S*D, D);
             load(k_smem[warpid], _k + (kv_idx*NUM_WORKERS + warpid)*S*D, D);
@@ -398,18 +384,14 @@ __global__ void attend_ker16(
                 load(k_reg, k_smem[subtile]); // load k from shared into registers
                 load(f_reg, f_smem[subtile]); // load f from shared into registers
 
-                if (0) {
-                    // printf("warpid=%d threadIdx.x=%d q_source_range=%d:%d, kv_target_range=%d:%d\n",
-                    //         warpid, threadIdx.x,
-                    //         (q_blk*NUM_WORKERS + warpid)*S, (q_blk*NUM_WORKERS + warpid)*S + S, // q_range
-                    //         (kv_idx*NUM_WORKERS + subtile)*S, (kv_idx*NUM_WORKERS + subtile)*S + S); // kv_range
-
+                if (DEBUG) {
                     auto item = f_reg.data[0][0];
                     printf("warpid=%d tid=%d q_source_range=%d:%d, kv_target_range=%d:%d forget[0] = {%f,%f}\n",
                            kittens::warpid(), threadIdx.x,
                            q_source_range_start, q_source_range_end,
                            kv_target_range_start, kv_target_range_end,
                            item.x, item.y);
+                    vecprint(f_reg, "f_reg");
                 }
 
                 zero(att_block); // zero 16x16 attention tile
@@ -418,15 +400,11 @@ __global__ void attend_ker16(
 
                 copy(att_block_mma, att_block); // convert to bf16 for mma_AB
 
-                //broadcast_row(F_reg, f_reg);
-                if (1) vecprint(f_reg, "f_reg");
-
                 // copy f_reg into every row of F_reg
                 rt_bf_1x1<ducks::rt_layout::col> F_reg_col;
                 rv<bf16_2, 1> f_reg_bf;
                 copy(f_reg_bf, f_reg);
                 broadcast_col(F_reg_col, f_reg_bf);
-                //swap_layout(F_reg, F_reg_col);
                 rt_bf_1x1<ducks::rt_layout::row> F_reg_row = swap_layout_inplace(F_reg_col);
                 copy(F_reg, F_reg_row);
 
@@ -435,7 +413,6 @@ __global__ void attend_ker16(
 
                     make_causal(F_reg, F_reg, kittens::base_types::constants<float>::one());
                     make_causal_with_diag(F_reg, F_reg, kittens::base_types::constants<float>::one());
-                    //make_causal(F_reg, F_reg, kittens::base_types::constants<bf16>::zero());
                 }
 
                 row_scan_backwards<float2>(F_reg);
@@ -443,14 +420,14 @@ __global__ void attend_ker16(
                 if (kv_idx < q_blk) {
                     // take the left column of F_reg_mul and broadcast-multiply with every element in F_reg
                     repeat_leading_col<bf16_2>(F_reg_mul);
-                    //if (1) tileprint_bf(F_reg_mul, "F_reg_mul", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
+                    if (DEBUG) tileprint_bf(F_reg_mul, "F_reg_mul", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
                     copy(F_reg2, F_reg);
                     mul(F_reg_mul, F_reg_mul, F_reg2);
                 } else {
                     copy(F_reg_mul, F_reg);
                 }
 
-                //if (1) tileprint_fl(F_reg, "F_reg", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
+                if (DEBUG) tileprint_fl(F_reg, "F_reg", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
 
                 mul(att_block_mma, att_block_mma, F_reg_mul);
 
