@@ -4,7 +4,7 @@
 
 constexpr int ATTN_B = 1;
 constexpr int ATTN_H = 1;
-constexpr int ATTN_N = 256;
+constexpr int ATTN_N = 16;
 constexpr int ATTN_D = 16; // hardcoded into this kernel
 constexpr int ITER   = 1;
 
@@ -38,16 +38,20 @@ int main(int argc, char **argv) {
 
     // create dummy variables that are the right size
     constexpr int TOTAL_ELEMENTS = ATTN_B*ATTN_H*ATTN_N*ATTN_D;
+    constexpr int TOTAL_TIMESTEPS = ATTN_B*ATTN_H*ATTN_N*1;
     constexpr int TOTAL_UNIQUE_ELEMENTS = ATTN_N*ATTN_D;
+    constexpr int TOTAL_UNIQUE_TIMESTEPS = ATTN_N*1;
 
     float *q = new float[TOTAL_UNIQUE_ELEMENTS];
     float *k = new float[TOTAL_UNIQUE_ELEMENTS];
     float *v = new float[TOTAL_UNIQUE_ELEMENTS];
+    float *f = new float[TOTAL_UNIQUE_TIMESTEPS];
     float *o_ref = new float[TOTAL_UNIQUE_ELEMENTS];
 
     bf16 *q_bf = new bf16[TOTAL_ELEMENTS];
     bf16 *k_bf = new bf16[TOTAL_ELEMENTS];
     bf16 *v_bf = new bf16[TOTAL_ELEMENTS];
+    float *f_bf = new float[TOTAL_TIMESTEPS];
     bf16 *o_bf = new bf16[TOTAL_ELEMENTS];
     float *o = new float[TOTAL_ELEMENTS];
 
@@ -61,6 +65,8 @@ int main(int argc, char **argv) {
     std::cout << "Finished loading K" << std::endl;
     for(int i = 0; i < TOTAL_UNIQUE_ELEMENTS; i++) infile >> v[i];
     std::cout << "Finished loading V" << std::endl;
+    for(int i = 0; i < TOTAL_UNIQUE_TIMESTEPS; i++) infile >> f[i];
+    std::cout << "Finished loading F" << std::endl;
     for(int i = 0; i < TOTAL_UNIQUE_ELEMENTS; i++) infile >> o_ref[i];
     std::cout << "Finished loading O_REF" << std::endl;
 
@@ -72,16 +78,22 @@ int main(int argc, char **argv) {
         k_bf[i] = __float2bfloat16(k[i % TOTAL_UNIQUE_ELEMENTS]);
         v_bf[i] = __float2bfloat16(v[i % TOTAL_UNIQUE_ELEMENTS]);
     }
+    for(int i = 0; i < TOTAL_TIMESTEPS; i++) {
+        f_bf[i] = f[i % TOTAL_UNIQUE_TIMESTEPS];
+    }
 
-    bf16 *d_q, *d_k, *d_v, *d_o;
+
+    bf16 *d_q, *d_k, *d_v, *d_o; float *d_f;
     cudaMalloc(&d_q, TOTAL_ELEMENTS * sizeof(bf16));
     cudaMalloc(&d_k, TOTAL_ELEMENTS * sizeof(bf16));
     cudaMalloc(&d_v, TOTAL_ELEMENTS * sizeof(bf16));
+    cudaMalloc(&d_f, TOTAL_TIMESTEPS * sizeof(float));
     cudaMalloc(&d_o, TOTAL_ELEMENTS * sizeof(bf16));
 
     cudaMemcpy(d_q, q_bf, TOTAL_ELEMENTS * sizeof(bf16), cudaMemcpyHostToDevice);
     cudaMemcpy(d_k, k_bf, TOTAL_ELEMENTS * sizeof(bf16), cudaMemcpyHostToDevice);
     cudaMemcpy(d_v, v_bf, TOTAL_ELEMENTS * sizeof(bf16), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_f, f_bf, TOTAL_TIMESTEPS * sizeof(float), cudaMemcpyHostToDevice);
     
     unsigned long mem_size = kittens::MAX_SHARED_MEMORY; // have the flag tell us
     
@@ -95,7 +107,7 @@ int main(int argc, char **argv) {
     std::cout << "Starting kernel\n";
     const auto start = std::chrono::high_resolution_clock::now();
     for(int i = 0; i < ITER; i++) {
-        attend_ker16<<<ATTN_B*ATTN_H, BLOCK_SIZE, mem_size>>>(ATTN_N, d_q, d_k, d_v, d_o);
+        attend_ker16<<<ATTN_B*ATTN_H, BLOCK_SIZE, mem_size>>>(ATTN_N, d_q, d_k, d_v, d_f, d_o);
     }
     cudaDeviceSynchronize();
     const auto finish = std::chrono::high_resolution_clock::now();
@@ -131,8 +143,8 @@ int main(int argc, char **argv) {
     cudaFree(d_v);
     cudaFree(d_o);
 
-    delete[] q, k, v, o, o_ref;
-    delete[] q_bf, k_bf, v_bf, o_bf;
+    delete[] q, k, v, f, o, o_ref;
+    delete[] q_bf, k_bf, v_bf, f_bf, o_bf;
 
     return 0;
 }
