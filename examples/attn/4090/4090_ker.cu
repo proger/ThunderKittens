@@ -189,24 +189,6 @@ template<typename T2> using rt_1x1_row = rt<T2, 1, 1, ducks::rt_layout::row>;
 
 template<typename dtype>
 __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
-    // const int leader = threadIdx.x & 0x1C; // 11100 in binary
-
-//[0.9900, 0.9802, 0.9704, 0.9608, 0.9512, 0.9418, 0.9324, 0.9231, 0.9139, 0.9048, 0.8958, 0.8869, 0.8781, 0.8694, 0.8607, 1.0000]]]], device='cuda:0') basic
-//[ 1.0000,  2.0000,  3.0000,  4.0000,  5.0000,  6.0000,  7.0000,  8.0000,  9.0000, 10.0000, 11.0000, 12.0000, 13.0000, 14.0000, 15.0000,  1.0000]]]], device='cuda:0') basic
-// [0.1000, 0.2000, 0.3000, 0.4000, 0.5000, 0.6000, 0.7000, 0.8000, 0.9000, 1.0000, 1.1000, 1.2000, 1.3000, 1.4000, 1.5000, 1.0000]]]], device='cuda:0') basic
-
-    if (laneid() >= 28) { // rows: 7 and 15
-        // want to print: rBc01, rBc89 
-        int col01 = (laneid() - 28) * 2;
-        int col89 = col01 + 8;
-        auto col01_item = src.tiles[0][0].data[1];
-        auto col89_item = src.tiles[0][0].data[3];
-        printf("before scan laneid=%d row=15 col01=%d {%f,%f} col89=%d {%f,%f}\n",
-            laneid(), col01, col01_item.x, col01_item.y,
-                      col89, col89_item.x, col89_item.y);
-    }
-
-    // we only need x
     dtype rTc01 = src.tiles[0][0].data[0]; // top row: r0, cols 0 1
     dtype rTc89 = src.tiles[0][0].data[2]; // top row: r0, cols 8 9
     dtype rBc01 = src.tiles[0][0].data[1]; // bottom row: r0 + 8, cols 0 1
@@ -218,17 +200,6 @@ __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
         src.tiles[0][0].data[i].y = src.tiles[0][0].data[i].x;
     }
 
-
-    if (laneid() >= 28) { // rows: 7 and 15
-        // want to print: rBc01, rBc89 
-        int col01 = (laneid() - 28) * 2;
-        int col89 = col01 + 8;
-        auto col01_item = src.tiles[0][0].data[1];
-        auto col89_item = src.tiles[0][0].data[3];
-        printf("step1 laneid=%d row=15 col01=%d {%f,%f} col89=%d {%f,%f}\n",
-            laneid(), col01, col01_item.x, col01_item.y,
-                      col89, col89_item.x, col89_item.y);
-    }
 
     int row_top = laneid() / 4;
     int row_bottom = row_top + 8;
@@ -244,27 +215,7 @@ __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
             src.tiles[0][0].data[i].y *= recv.y;
         }
 
-
-        if (row_bottom == 15 && i == 1) {
-            auto col01_item = src.tiles[0][0].data[1];
-            auto col89_item = src.tiles[0][0].data[3];
-            printf("step1 laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f} recv {%f, %f} pass=%d\n",
-                laneid(), colL, col01_item.x, col01_item.y,
-                        colR, col89_item.x, col89_item.y, recv.x, recv.y, laneid() % 4 < 3);
-        }
-
-
-
         recv = packed_shfl_down_sync(MASK_ALL, src.tiles[0][0].data[i], 2);
-
-        if (row_bottom == 15 && i == 1) {
-            auto col01_item = src.tiles[0][0].data[1];
-            auto col89_item = src.tiles[0][0].data[3];
-            printf("step1a laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f} recv {%f, %f} pass=%d\n",
-                laneid(), colL, col01_item.x, col01_item.y,
-                        colR, col89_item.x, col89_item.y, recv.x, recv.y, laneid() % 4 < 2);
-        }
-
 
         if (laneid() % 4 < 2) {
             src.tiles[0][0].data[i].x *= recv.x;
@@ -272,29 +223,6 @@ __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
         }
     }
 
-
-    if (laneid() >= 28) { // rows: 7 and 15
-        // want to print: rBc01, rBc89 
-        int col01 = (laneid() - 28) * 2;
-        int col89 = col01 + 8;
-        auto col01_item = src.tiles[0][0].data[1];
-        auto col89_item = src.tiles[0][0].data[3];
-        printf("step2 laneid=%d row=15 col01=%d {%f,%f} col89=%d {%f,%f}\n",
-            laneid(), col01, col01_item.x, col01_item.y,
-                      col89, col89_item.x, col89_item.y);
-    }
-
-
-    if (row_bottom == 15) {
-        auto col01_item = src.tiles[0][0].data[1];
-        auto col89_item = src.tiles[0][0].data[3];
-        printf("stitch8 pre step laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f}\n",
-            laneid(), colL, col01_item.x, col01_item.y,
-                    colR, col89_item.x, col89_item.y);
-    }
-
-
-    // r0
     if (colL == 0) {
         src.tiles[0][0].data[0].x *= src.tiles[0][0].data[2].x; // r0: 8 to 0
         src.tiles[0][0].data[0].y *= src.tiles[0][0].data[2].y; // r0: 8 to 0
@@ -302,56 +230,9 @@ __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
         src.tiles[0][0].data[1].y *= src.tiles[0][0].data[3].y; // r8: 8 to 0
     }
 
-    if (row_bottom == 15) {
-        auto col01_item = src.tiles[0][0].data[1];
-        auto col89_item = src.tiles[0][0].data[3];
-        printf("8 to 0 step laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f}\n",
-            laneid(), colL, col01_item.x, col01_item.y,
-                    colR, col89_item.x, col89_item.y);
-    }
-
-
-    // auto recv = packed_shfl_up_sync(MASK_ALL, src.tiles[0][0].data[2], 3); // r0
-    // if (colL == 6) {
-    //     src.tiles[0][0].data[0].x *= recv.x;
-    //     src.tiles[0][0].data[0].y *= recv.y;
-    // }
-    // recv = packed_shfl_up_sync(MASK_ALL, src.tiles[0][0].data[3], 3); // r8
-    // if (colL == 6) {
-    //     src.tiles[0][0].data[1].x *= recv.x;
-    //     src.tiles[0][0].data[1].y *= recv.y;
-    // }
-
-    // if (row_bottom == 15) {
-    //     auto col01_item = src.tiles[0][0].data[1];
-    //     auto col89_item = src.tiles[0][0].data[3];
-    //     printf("stitch8 step laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f} recv {%f,%f}\n",
-    //         laneid(), colL, col01_item.x, col01_item.y,
-    //                 colR, col89_item.x, col89_item.y, recv.x, recv.y);
-    // }
-
-
     #pragma unroll
     for (int i = 0; i < 2; i++) {
-
-        if (row_bottom == 15 && i == 1) {
-            auto col01_item = src.tiles[0][0].data[1];
-            auto col89_item = src.tiles[0][0].data[3];
-            printf("sending up=%d laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f} send=%f\n",
-                i, laneid(), colL, col01_item.x, col01_item.y,
-                        colR, col89_item.x, col89_item.y, src.tiles[0][0].data[i].x);
-        }
-
         auto recv = packed_shfl_up_sync(MASK_ALL, src.tiles[0][0].data[i+2], 2);
-        //auto recv = packed_shfl_down_sync(MASK_ALL, src.tiles[0][0].data[i], 3);
-
-        if (row_bottom == 15 && i == 1) {
-            auto col01_item = src.tiles[0][0].data[1];
-            auto col89_item = src.tiles[0][0].data[3];
-            printf("up=%d laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f} recv {%f, %f} pass=%d\n",
-                i, laneid(), colL, col01_item.x, col01_item.y,
-                        colR, col89_item.x, col89_item.y, recv.x, recv.y, laneid() % 4 == 2);
-        }
 
         if (laneid() % 4 == 2) { // only (laneid() % 4 == 2) is receiving
             src.tiles[0][0].data[i].x *= recv.x;
@@ -361,15 +242,6 @@ __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
         } else {
             recv = packed_shfl_up_sync(MASK_ALL, src.tiles[0][0].data[i+2], 1);
         }
-
-        if (row_bottom == 15 && i == 1) {
-            auto col01_item = src.tiles[0][0].data[1];
-            auto col89_item = src.tiles[0][0].data[3];
-            printf("up2=%d laneid=%d row=15 colL=%d {%f,%f} colR=%d {%f,%f} recv {%f, %f} pass=%d\n",
-                i, laneid(), colL, col01_item.x, col01_item.y,
-                        colR, col89_item.x, col89_item.y, recv.x, recv.y, laneid() % 4 == 1 || laneid() % 4 == 3);
-        }
-
         if (laneid() % 4 == 1 || laneid() % 4 == 3) {  // only (laneid() % 4 == 1, 3) are receiving
             src.tiles[0][0].data[i].x *= recv.x;
             src.tiles[0][0].data[i].y *= recv.y;
@@ -380,21 +252,6 @@ __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
     src.tiles[0][0].data[2].y /= rTc89.x;
     src.tiles[0][0].data[1].y /= rBc01.x;
     src.tiles[0][0].data[3].y /= rBc89.x;
-
-    if (laneid() >= 28) { // rows: 7 and 15
-        // want to print: rBc01, rBc89 
-        int col01 = (laneid() - 28) * 2;
-        int col89 = col01 + 8;
-        auto col01_item = src.tiles[0][0].data[1];  // __bfloat1622float2(src.tiles[0][0].data[1]);
-        auto col89_item = src.tiles[0][0].data[3]; // __bfloat1622float2(src.tiles[0][0].data[3]);
-        printf("scan laneid=%d row=15 cols=%d,%d {%f,%f} cols=%02d,%02d {%f,%f}\n",
-            laneid(), col01, col01+1, col01_item.x, col01_item.y,
-                      col89, col89+1, col89_item.x, col89_item.y);
-
-        //   [    0.0013,     0.0131,     0.0654,     0.2179,     0.5449,     1.0897,     1.8162,     2.5946,     3.2432,     3.6036,     3.6036,     3.2760,     2.7300,     2.1000,     1.5000,
-        //        1.0000]]]], device='cuda:0') basic cumprod
-
-    }
 }
 
 
