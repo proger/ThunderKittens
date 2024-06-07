@@ -371,7 +371,7 @@ __global__ void attend_ker16(
                 if (kv_idx == q_blk) {
                     make_causal(att_block_mma, att_block_mma, kittens::base_types::constants<bf16>::zero());                    
 
-                    make_causal(F_reg, F_reg, kittens::base_types::constants<float>::zero());
+                    make_causal(F_reg, F_reg, kittens::base_types::constants<float>::one());
                     make_causal_with_diag(F_reg, F_reg, kittens::base_types::constants<float>::one());
                     //make_causal(F_reg, F_reg, kittens::base_types::constants<bf16>::zero());
                 }
