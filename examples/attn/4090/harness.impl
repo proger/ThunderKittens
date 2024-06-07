@@ -4,7 +4,7 @@
 
 constexpr int ATTN_B = 1;
 constexpr int ATTN_H = 1;
-constexpr int ATTN_N = 16;
+constexpr int ATTN_N = 32;
 constexpr int ATTN_D = 16; // hardcoded into this kernel
 constexpr int ITER   = 1;
 

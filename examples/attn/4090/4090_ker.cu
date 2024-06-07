@@ -36,13 +36,39 @@ __device__ void tileprint_fl(rt_fl_1x1<> reg, char *name, int a, int b, int c, i
             auto itemBL = reg.tiles[i][j].data[1];
             auto itemBR = reg.tiles[i][j].data[3];
             //printf("warpid=%d tid=%d laneid=%d rows q=%d:%d kv=%d:%d %s[%d][%d].data[%d] = {%f,%f}\n", warpid, threadIdx.x, laneid(), a,b,c,d, name, i, j, k, item.x, item.y);
-            printf("warpid=%d laneid=%d top=%d colL=%d {%f,%f} colR=%d {%f,%f}\n",
-                warpid, laneid(), row_top, colL, itemTL.x, itemTL.y, colR, itemTR.x, itemTR.y);
-            printf("warpid=%d laneid=%d bottom=%d colL=%d {%f,%f} colR=%d {%f,%f}\n",
-                warpid, laneid(), row_bottom, colL, itemBL.x, itemBL.y, colR, itemBR.x, itemBR.y);
+            printf("q=%d:%d kv=%d:%d warpid=%d laneid=%d top=%d colL=%d {%f,%f} colR=%d {%f,%f}\n",
+                a,b,c,d, warpid, laneid(), row_top, colL, itemTL.x, itemTL.y, colR, itemTR.x, itemTR.y);
+            printf("q=%d:%d kv=%d:%d warpid=%d laneid=%d bottom=%d colL=%d {%f,%f} colR=%d {%f,%f}\n",
+                a,b,c,d, warpid, laneid(), row_bottom, colL, itemBL.x, itemBL.y, colR, itemBR.x, itemBR.y);
         }
     }
 }
+
+
+__device__ void tileprint_bf(rt_bf_1x1<> reg, char *name, int a, int b, int c, int d) {
+    auto warpid        = kittens::warpid();
+    for(int i = 0; i < reg.height; i++) {
+        for(int j = 0; j < reg.width; j++) {
+            static_assert(reg.packed_per_thread == 4, "packed_per_thread must be 4");
+
+            int row_top = laneid() / 4;
+            int row_bottom = row_top + 8;
+            int colL = laneid() % 4 * 2; // stride 4
+            int colR = colL + 8;
+
+            auto itemTL = __bfloat1622float2(reg.tiles[i][j].data[0]);
+            auto itemTR = __bfloat1622float2(reg.tiles[i][j].data[2]);
+            auto itemBL = __bfloat1622float2(reg.tiles[i][j].data[1]);
+            auto itemBR = __bfloat1622float2(reg.tiles[i][j].data[3]);
+            //printf("warpid=%d tid=%d laneid=%d rows q=%d:%d kv=%d:%d %s[%d][%d].data[%d] = {%f,%f}\n", warpid, threadIdx.x, laneid(), a,b,c,d, name, i, j, k, item.x, item.y);
+            printf("%s q=%d:%d kv=%d:%d warpid=%d laneid=%d top=%d colL=%d {%f,%f} colR=%d {%f,%f}\n",
+                name, a,b,c,d, warpid, laneid(), row_top, colL, itemTL.x, itemTL.y, colR, itemTR.x, itemTR.y);
+            printf("%s q=%d:%d kv=%d:%d warpid=%d laneid=%d bottom=%d colL=%d {%f,%f} colR=%d {%f,%f}\n",
+                name, a,b,c,d, warpid, laneid(), row_bottom, colL, itemBL.x, itemBL.y, colR, itemBR.x, itemBR.y);
+        }
+    }
+}
+
 
 
 __device__ void vecprint(rv<float2, 1> reg, char *name) {
@@ -172,21 +198,17 @@ __device__ inline float2 packed_shfl_up_sync<float2>(uint32_t mask, const float2
 }
 
 
-/**
- * @brief Perform a row-wise reduction on a matrix in row-major layout.
- *
- * This function template performs a parallel reduction across the rows of a matrix using a specified operation.
- * It leverages warp shuffle functions for efficient intra-warp communication.
- *
- * @tparam op The operation to be applied for reduction.
- * @tparam V The vector type for the row accumulator.
- * @tparam T The matrix type with row layout.
- * @tparam reset A boolean flag indicating whether to reset the accumulator (ignore src_accum) or not.
- * @param[out] row_accum The accumulator where the result of the reduction is stored.
- * @param[in] src The source matrix on which to perform the reduction.
- */
 template<typename T2> using rt_1x1_row = rt<T2, 1, 1, ducks::rt_layout::row>;
 
+/**
+ * @brief Perform a row-wise multiplication scan on a matrix in row-major layout from right to left (backwards).
+ *
+ * This function template performs a parallel scan across the rows of a matrix using multiplication operation.
+ * It leverages warp shuffle functions for efficient intra-warp communication.
+ *
+ * @tparam dtype The 2-element vector type for row elements (float2, bf16_2).
+ * @param[inout] src The source matrix where which to perform the scan.
+ */
 template<typename dtype>
 __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
     dtype rTc01 = src.tiles[0][0].data[0]; // top row: r0, cols 0 1
@@ -256,6 +278,45 @@ __device__ static inline void row_scan_backwards(rt_1x1_row<dtype> &src) {
 
 
 
+/**
+ * @brief Repeat the leading (leftmost) column of a matrix in a row-major layout across other columns.
+ *
+ * @tparam dtype The 2-element vector type for row elements (float2, bf16_2).
+ * @param[inout] src The source matrix.
+ */
+template<typename dtype>
+__device__ static inline void repeat_leading_col(rt_1x1_row<dtype> &src) {
+
+#define shuffle_far(x) {auto recv = packed_shfl_up_sync(MASK_ALL, x, 2); if (laneid() % 4 == 2) x = recv;}
+#define shuffle_near(x) {auto recv = packed_shfl_up_sync(MASK_ALL, x, 1); if (laneid() % 2 == 1) x = recv;}
+
+    src.tiles[0][0].data[0].y = src.tiles[0][0].data[0].x; // top: copy 0 to 1
+    src.tiles[0][0].data[2].x = src.tiles[0][0].data[0].x; // top: copy 0 to 8
+    src.tiles[0][0].data[2].y = src.tiles[0][0].data[0].x; // top: copy 0 to 9
+
+    src.tiles[0][0].data[1].y = src.tiles[0][0].data[1].x; // bottom: copy 0 to 1
+    src.tiles[0][0].data[3].x = src.tiles[0][0].data[1].x; // bottom: copy 0 to 8
+    src.tiles[0][0].data[3].y = src.tiles[0][0].data[1].x; // bottom: copy 0 to 9
+
+    // top far shuffle: 0, 1 to 4, 5; 8, 9 to 12, 13
+    shuffle_far(src.tiles[0][0].data[0]);
+    shuffle_far(src.tiles[0][0].data[2]);
+
+    // bottom far shuffle: 0, 1 to 4, 5; 8, 9 to 12, 13
+    shuffle_far(src.tiles[0][0].data[1]);
+    shuffle_far(src.tiles[0][0].data[3]);
+
+    // top near shuffle: 0, 1 to 2, 3; 8, 9 to 10, 11
+    shuffle_near(src.tiles[0][0].data[0]);
+    shuffle_near(src.tiles[0][0].data[2]);
+
+    // bottom near shuffle: 0, 1 to 2, 3; 8, 9 to 10, 11
+    shuffle_near(src.tiles[0][0].data[1]);
+    shuffle_near(src.tiles[0][0].data[3]);
+}
+
+
+
 __global__ void attend_ker16(
     int n,
     const bf16* __restrict__ __q__,
@@ -271,11 +332,11 @@ __global__ void attend_ker16(
     const bf16 *_q = __q__ + block_start, *_k = __k__ + block_start, *_v = __v__ + block_start;
     bf16 *_o = __o__ + block_start;
     const float *_f = __f__ + gate_start;
-          
+
 
     extern __shared__ alignment_dummy __shm[]; // this is the CUDA shared memory
     shared_allocator al((int*)&__shm[0]);
-    
+
     // K and V live in shared memory -- this is about all that will fit.
     st_bf_1x1<ducks::st_layout::swizzle> (&k_smem)[NUM_WORKERS] = al.allocate<st_bf_1x1<ducks::st_layout::swizzle>, NUM_WORKERS>();
     st_bf_1x1<ducks::st_layout::swizzle> (&v_smem)[NUM_WORKERS] = al.allocate<st_bf_1x1<ducks::st_layout::swizzle>, NUM_WORKERS>();
@@ -287,13 +348,14 @@ __global__ void attend_ker16(
     rv<float2,1> edge_reg;
     rt_fl_1x1<> F_reg; // multiplied matrix
     rt_bf_1x1<> F_reg_mul;
+    rt_bf_1x1<> F_reg2;
     rt_fl_1x1<> att_block;
     rt_bf_1x1<> att_block_mma;
     rt_fl_1x1<> o_reg;
     const auto S = q_reg.rows; // source time
     const auto T = q_reg.rows; // target time
     const auto D = q_reg.cols; // headdim
-    
+
     int qo_blocks = n / (S*NUM_WORKERS);
     //printf("have warpid=%d blockIdx.x=%d,%d,%d threadIdx=%d,%d,%d  block_start=%d qo_blocks=%d __q__=%p\n", warpid,  blockIdx.x, blockIdx.y,blockIdx.z,threadIdx.x,threadIdx.y,threadIdx.z, block_start, qo_blocks, __q__);
 
@@ -316,9 +378,9 @@ __global__ void attend_ker16(
         auto q_source_range_start = (q_blk*NUM_WORKERS + warpid)*S;
         auto q_source_range_end = (q_blk*NUM_WORKERS + warpid)*S + S;
 
-        // iterate over k, v for these q's that have been loaded
-        //for(auto kv_idx = q_blk; kv_idx >= 0; kv_idx--) {
-        for(auto kv_idx = 0; kv_idx <= q_blk; kv_idx++) {
+        // iterate over k, v for these q's that have been loaded BACKWARDS
+        for(auto kv_idx = q_blk; kv_idx >= 0; kv_idx--) {
+        //for(auto kv_idx = 0; kv_idx <= q_blk; kv_idx++) {
         // for(auto kv_idx = q_blk, jj = 0;jj < 1; jj++ ) {
             // each warp loads its own chunk of k, v into shared memory
             load(v_smem[warpid], _v + (kv_idx*NUM_WORKERS + warpid)*S*D, D);
@@ -356,6 +418,9 @@ __global__ void attend_ker16(
 
                 copy(att_block_mma, att_block); // convert to bf16 for mma_AB
 
+                //broadcast_row(F_reg, f_reg);
+                if (1) vecprint(f_reg, "f_reg");
+
                 // copy f_reg into every row of F_reg
                 rt_bf_1x1<ducks::rt_layout::col> F_reg_col;
                 rv<bf16_2, 1> f_reg_bf;
@@ -364,40 +429,29 @@ __global__ void attend_ker16(
                 //swap_layout(F_reg, F_reg_col);
                 rt_bf_1x1<ducks::rt_layout::row> F_reg_row = swap_layout_inplace(F_reg_col);
                 copy(F_reg, F_reg_row);
-                
-                //broadcast_row(F_reg, f_reg);
-                if (1) vecprint(f_reg, "f_reg");
 
                 if (kv_idx == q_blk) {
-                    make_causal(att_block_mma, att_block_mma, kittens::base_types::constants<bf16>::zero());                    
+                    make_causal(att_block_mma, att_block_mma, kittens::base_types::constants<bf16>::zero());
 
                     make_causal(F_reg, F_reg, kittens::base_types::constants<float>::one());
                     make_causal_with_diag(F_reg, F_reg, kittens::base_types::constants<float>::one());
                     //make_causal(F_reg, F_reg, kittens::base_types::constants<bf16>::zero());
                 }
 
-                // TODO: make diagonal zeros
+                row_scan_backwards<float2>(F_reg);
 
-                if (kv_idx == q_blk) {
-                    //make_causal(F_reg, F_reg, -INFINITY); // for log space fs
-                    //make_causal(F_reg, F_reg, 0);
+                if (kv_idx < q_blk) {
+                    // take the left column of F_reg_mul and broadcast-multiply with every element in F_reg
+                    repeat_leading_col<bf16_2>(F_reg_mul);
+                    //if (1) tileprint_bf(F_reg_mul, "F_reg_mul", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
+                    copy(F_reg2, F_reg);
+                    mul(F_reg_mul, F_reg_mul, F_reg2);
+                } else {
+                    copy(F_reg_mul, F_reg);
                 }
 
-                //exp(F_reg, F_reg);
+                //if (1) tileprint_fl(F_reg, "F_reg", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
 
-                // perform shuffling down along every row, take care of packed stuff
-
-                //if (1) tileprint(F_reg, "pre_F_reg", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
-
-                //row_reduce(edge_reg, F_reg, edge_reg);
-                //row_scan_backwards<rv<bf16_2,1>, rt_bf_1x1<>, true>(edge_reg, F_reg, edge_reg);
-                row_scan_backwards<float2>(F_reg);
-                //row_sum(edge_reg, F_reg, edge_reg);
-                //if (1) vecprint(edge_reg, "edge_reg");
-
-                if (1) tileprint_fl(F_reg, "F_reg", q_source_range_start, q_source_range_end, kv_target_range_start, kv_target_range_end);
-
-                copy(F_reg_mul, F_reg);
                 mul(att_block_mma, att_block_mma, F_reg_mul);
 
                 load(v_reg, v_smem[subtile]); // load v from shared into registers.

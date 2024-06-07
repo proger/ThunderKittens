@@ -7,7 +7,7 @@ import sys
 # it does mean we'll have to check batch/head behavior separately later, but that should be much easier to debug.
 B = 1
 H = 1
-N = 16 # sequence length?
+N = 32 # sequence length
 D = 16
 DV = 16
 
@@ -16,9 +16,9 @@ TESTNAME = sys.argv[1]
 torch.set_printoptions(precision=4, linewidth=200, sci_mode=False)
 
 if TESTNAME in ['ones']:
-    q = (torch.ones((B, H, N, D), dtype=torch.bfloat16, device='cuda')).to(torch.float32)
-    k = (torch.ones((B, H, N, D), dtype=torch.bfloat16, device='cuda')).to(torch.float32)
-    v = (torch.ones((B, H, N, DV), dtype=torch.bfloat16, device='cuda')).to(torch.float32)
+    q = (torch.ones((B, H, N, D), dtype=torch.bfloat16, device='cuda')).to(torch.float32)/D
+    k = (torch.ones((B, H, N, D), dtype=torch.bfloat16, device='cuda')).to(torch.float32)/D
+    v = (torch.ones((B, H, N, DV), dtype=torch.bfloat16, device='cuda')).to(torch.float32)/D
     #f = (torch.log(0.99*torch.ones((B, H, N), dtype=torch.bfloat16, device='cuda'))).to(torch.float32)
     #f = -0.001*(N-torch.arange(N, device='cuda')[None, None, :].repeat(B, H, 1).to(torch.float32))
     f = -0.001*(torch.arange(N, device='cuda')[None, None, :].repeat(B, H, 1).to(torch.float32))
@@ -31,9 +31,9 @@ if TESTNAME in ['ones']:
     #f = 2*torch.ones_like(f) # test: two on the diagonal
 
     #f = -0.01 * torch.arange(1,N+1, device='cuda')[None, None, :].repeat(B, H, 1).to(torch.float32)
-    f = (0.1*torch.arange(1,N+1, device='cuda')[None, None, :].repeat(B, H, 1).to(torch.float32)).log()
+    #f = (0.1*torch.arange(1,N+1, device='cuda')[None, None, :].repeat(B, H, 1).to(torch.float32)).log()
 
-    print(f[:,:,:16], 'f')
+    print(f[:,:,:], 'f')
     #print(f.view(B, H, -1, 16).sum(-1), 'f cumsum')
 elif TESTNAME in ['twos']:
     q = (torch.ones((B, H, N, D), dtype=torch.bfloat16, device='cuda')*2).to(torch.float32)
@@ -68,12 +68,12 @@ def pytorch_test(Q, K, V, F, TESTNAME='all'):
     def preforget(g):
         "compute the mask"
         B,H,N = g.shape
-        l = g.new_zeros(B, H, N, N) + float('-inf')
+        l = g.new_ones(B, H, N, N) #+ float('-inf')
 
         for t in range(N): # top to bottom
-            l[:, :, t, t] = 0
+            l[:, :, t, t] = 1
             for s in range(t-1, -1, -1): # right to left: addition
-                l[:, :, t, s] = l[:, :, t, s+1] + g[:, :, s] # without shifting f: use s+1
+                l[:, :, t, s] = l[:, :, t, s+1] * g[:, :, s] # without shifting f: use s+1
         return l
 
     def loop(f_reg, zero=0):
@@ -95,17 +95,19 @@ def pytorch_test(Q, K, V, F, TESTNAME='all'):
 
     ATT = make_causal(torch.einsum("bhnd,bhmd->bhnm", Q, K))
     #print(ATT, 'ATT')
-    M = torch.exp(preforget(F))
+    #M = torch.exp(preforget(F))
+    print(F.exp(), 'F.exp')
+    M = preforget(F.exp())
     #M = torch.ones_like(M)
     #M = 2*torch.eye(N, device='cuda').expand(B, H, N, N).to(torch.bfloat16) # test: two on the diagonal
-    print(M, 'M')
+    print(M, 'M = preforget(F.exp())')
     out = torch.einsum("bhnm,bhmd->bhnd", ATT * M, V).to(torch.bfloat16)
 
-    print(loop(F), 'loop')
-    print(preforget(F), 'preforget')
-    print(basic(F)[:, :, :16, :16].exp(), 'basic')
-    print(basic(F)[:, :, :16, :16].exp().flip(-1).cumprod(-1).flip(-1), 'basic cumprod')
-    assert torch.allclose(loop(F), preforget(F), atol=1e-5) # jeez, this is a lot of error
+    #print(loop(F), 'loop')
+    #print(preforget(F), 'preforget')
+    #print(basic(F)[:, :, :16, :16].exp(), 'basic')
+    #print(basic(F)[:, :, :16, :16].exp().flip(-1).cumprod(-1).flip(-1), 'basic cumprod')
+    #assert torch.allclose(loop(F), preforget(F), atol=1e-5) # jeez, this is a lot of error
 
     K, V = K.unsqueeze(-2), V.unsqueeze(-1)
     kv_state = (K * V).cumsum(dim=2)
